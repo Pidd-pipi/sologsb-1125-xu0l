@@ -18,6 +18,7 @@ import {
 import { Link as RouterLink } from 'react-router-dom';
 import EmptyState from '../components/common/EmptyState';
 import ClassificationBadge from '../components/common/Badge';
+import { PrepStatusChip } from '../components/common/PrepStatusChip';
 import { useSampleFilter } from '../hooks/useSampleFilter';
 import { useSampleStore } from '../stores/sampleStore';
 import { useToastStore } from '../stores/uiStore';
@@ -28,6 +29,7 @@ import {
   SECTION_QUALITIES,
   SECTION_QUALITY_LABELS,
   mineralTotal,
+  sectionPrepStatus,
   type SectionQuality,
 } from '../types/section';
 import { formatDate } from '../utils/format';
@@ -167,7 +169,7 @@ export default function Sections() {
                       <Typography variant="h6" fontWeight={700} sx={{ flex: 1 }}>
                         {s.sectionNo}
                       </Typography>
-                      <Chip size="small" color="secondary" label={SECTION_QUALITY_LABELS[s.quality]} />
+                      <PrepStatusChip status={sectionPrepStatus(s)} />
                     </Stack>
 
                     {sample ? (
@@ -191,6 +193,10 @@ export default function Sections() {
 
                     <Typography variant="body2" color="text.secondary">
                       厚度 {s.thickness} μm · {PREPARATION_LABELS[s.preparation]} · 登记 {formatDate(s.createdAt)}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      {s.scheduleDate ? `制样日期 ${s.scheduleDate}` : '未排程（待排）'} · 质量
+                      {SECTION_QUALITY_LABELS[s.quality]}
                     </Typography>
                     <Typography variant="body2" color="text.secondary">
                       矿物：{MINERAL_KEYS.map((k) => `${MINERAL_LABELS[k]} ${s.minerals[k]}%`).join(' · ')}

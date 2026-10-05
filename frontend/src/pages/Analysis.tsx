@@ -25,6 +25,7 @@ import FieldGroup from '../components/common/FieldGroup';
 import { useLocalDraft } from '../hooks/useLocalDraft';
 import { useSampleStore } from '../stores/sampleStore';
 import { useToastStore } from '../stores/uiStore';
+import { AnalysisBindingError } from '../services/scheduler';
 import {
   ANALYSIS_METHODS,
   ANALYSIS_METHOD_LABELS,
@@ -33,6 +34,7 @@ import {
   type AnalysisMethod,
   type AnalysisTarget,
 } from '../types/analysis';
+import { SECTION_PREP_LABELS, isSectionReadyForAnalysis } from '../types/section';
 import { classifyByAnalysis, evaluateThresholds } from '../utils/classify';
 import { formatDate } from '../utils/format';
 
@@ -78,6 +80,11 @@ export default function Analysis() {
     () => sections.filter((s) => s.sampleId === value.sampleId),
     [sections, value.sampleId],
   );
+  /** 只有制样已完成（done）的切片才能绑定检测记录 */
+  const readySections = useMemo(
+    () => sampleSections.filter(isSectionReadyForAnalysis),
+    [sampleSections],
+  );
 
   const hits = evaluateThresholds(value);
   const advice = classifyByAnalysis(value);
@@ -89,24 +96,33 @@ export default function Analysis() {
       return;
     }
     if (value.target === 'section' && !value.sectionId) {
-      setError('检测对象为切片时必须选择一张切片');
+      setError('检测对象为切片时必须选择一张已完成制样的切片');
       return;
     }
+    try {
+      await addAnalysis({
+        sampleId: value.sampleId,
+        sectionId: value.target === 'section' ? value.sectionId : undefined,
+        target: value.target,
+        method: value.method,
+        fa: Number(value.fa),
+        fs: Number(value.fs),
+        ni: Number(value.ni),
+        kamaciteBandwidth: Number(value.kamaciteBandwidth),
+        testedAt: value.testedAt,
+      });
+    } catch (err) {
+      // 绑定校验失败：保留草稿，不清理
+      if (err instanceof AnalysisBindingError) {
+        setError(err.message);
+        return;
+      }
+      throw err;
+    }
     setError(null);
-    await addAnalysis({
-      sampleId: value.sampleId,
-      sectionId: value.target === 'section' ? value.sectionId : undefined,
-      target: value.target,
-      method: value.method,
-      fa: Number(value.fa),
-      fs: Number(value.fs),
-      ni: Number(value.ni),
-      kamaciteBandwidth: Number(value.kamaciteBandwidth),
-      testedAt: value.testedAt,
-    });
     clear();
     notify('检测记录已写入本地库');
-    patch({ fa: 18.5, fs: 16, ni: 0.8, kamaciteBandwidth: 0.05 });
+    patch({ fa: 18.5, fs: 16, ni: 0.8, kamaciteBandwidth: 0.05, sectionId: '' });
   };
 
   return (
@@ -159,26 +175,38 @@ export default function Analysis() {
                   </Select>
                 </FormControl>
                 {value.target === 'section' ? (
-                  <FormControl size="small" sx={{ minWidth: 180 }}>
-                    <InputLabel id="analysis-section-label">关联切片</InputLabel>
+                  <FormControl size="small" sx={{ minWidth: 240 }}>
+                    <InputLabel id="analysis-section-label">关联切片（仅已完成）</InputLabel>
                     <Select
                       labelId="analysis-section-label"
-                      label="关联切片"
+                      label="关联切片（仅已完成）"
                       value={value.sectionId}
                       onChange={(e) => patch({ sectionId: e.target.value })}
                     >
-                      {sampleSections.length === 0 ? (
+                      {readySections.length === 0 ? (
                         <MenuItem value="" disabled>
-                          该样本暂无切片
+                          该样本暂无已完成制样的切片
                         </MenuItem>
                       ) : null}
-                      {sampleSections.map((s) => (
+                      {readySections.map((s) => (
                         <MenuItem key={s.id} value={s.id}>
                           {s.sectionNo}（{s.thickness} μm）
                         </MenuItem>
                       ))}
                     </Select>
                   </FormControl>
+                ) : null}
+                {value.target === 'section' &&
+                sampleSections.length > 0 &&
+                readySections.length < sampleSections.length ? (
+                  <Alert severity="info" sx={{ flexBasis: '100%' }}>
+                    {sampleSections.length - readySections.length} 张切片尚未完成制样（
+                    {sampleSections
+                      .filter((s) => !isSectionReadyForAnalysis(s))
+                      .map((s) => `${s.sectionNo} ${SECTION_PREP_LABELS[s.prepStatus ?? 'pending']}`)
+                      .join('、')}
+                    ），暂不能绑定检测记录。
+                  </Alert>
                 ) : null}
                 <FormControl size="small" sx={{ minWidth: 150 }}>
                   <InputLabel id="analysis-method-label">方法</InputLabel>

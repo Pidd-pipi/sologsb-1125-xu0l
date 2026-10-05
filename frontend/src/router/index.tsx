@@ -6,13 +6,15 @@ import Detail from '../pages/Detail';
 import Sections from '../pages/Sections';
 import Analysis from '../pages/Analysis';
 import Locations from '../pages/Locations';
+import Schedule from '../pages/Schedule';
 
-/** 路由表：6 条主路由，与提示词一一对应 */
+/** 路由表：7 条主路由 */
 export const ROUTES = [
   { path: '/', element: <Overview /> },
   { path: '/samples/new', element: <New /> },
   { path: '/samples/:id', element: <Detail /> },
   { path: '/sections', element: <Sections /> },
+  { path: '/schedule', element: <Schedule /> },
   { path: '/analysis', element: <Analysis /> },
   { path: '/locations', element: <Locations /> },
 ];

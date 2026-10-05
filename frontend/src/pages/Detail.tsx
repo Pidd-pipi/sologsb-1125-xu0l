@@ -22,6 +22,7 @@ import SampleCard from '../components/common/SampleCard';
 import FieldGroup from '../components/common/FieldGroup';
 import ClassificationBadge from '../components/common/Badge';
 import EmptyState from '../components/common/EmptyState';
+import { PrepStatusChip } from '../components/common/PrepStatusChip';
 import { useSampleStore } from '../stores/sampleStore';
 import { useToastStore } from '../stores/uiStore';
 import {
@@ -38,10 +39,12 @@ import {
   SECTION_QUALITIES,
   SECTION_QUALITY_LABELS,
   mineralTotal,
+  sectionPrepStatus,
   type MineralRatios,
   type PreparationMethod,
   type SectionQuality,
 } from '../types/section';
+import { capacityInfo } from '../services/scheduler';
 import {
   FALL_OR_FIND_LABELS,
   STORAGE_LABELS,
@@ -59,7 +62,11 @@ export default function Detail() {
   const finds = useSampleStore((s) => s.finds);
   const sections = useSampleStore((s) => s.sections);
   const analysis = useSampleStore((s) => s.analysis);
-  const addSection = useSampleStore((s) => s.addSection);
+  const schedules = useSampleStore((s) => s.schedules);
+  const submitSectionAction = useSampleStore((s) => s.submitSection);
+  const cancelScheduleAction = useSampleStore((s) => s.cancelSchedule);
+  const failScheduleAction = useSampleStore((s) => s.failSchedule);
+  const completeScheduleAction = useSampleStore((s) => s.completeSchedule);
   const addAnalysis = useSampleStore((s) => s.addAnalysis);
   const updateSample = useSampleStore((s) => s.updateSample);
   const notify = useToastStore((s) => s.notify);
@@ -68,15 +75,20 @@ export default function Detail() {
   const find = useMemo(() => finds.find((f) => f.sampleId === id), [finds, id]);
   const mySections = useMemo(() => sections.filter((s) => s.sampleId === id), [sections, id]);
   const myAnalysis = useMemo(() => analysis.filter((a) => a.sampleId === id), [analysis, id]);
+  const mySchedules = useMemo(() => schedules.filter((sc) => sc.sampleId === id), [schedules, id]);
 
   const [sectionDraft, setSectionDraft] = useState({
     sectionNo: '',
     thickness: 30,
     preparation: 'resin' as PreparationMethod,
+    scheduleDate: new Date().toISOString().slice(0, 10),
     quality: 'unrated' as SectionQuality,
     micrograph: '',
     minerals: { olivine: 40, pyroxene: 25, feldspar: 15, metal: 20 } as MineralRatios,
   });
+  /** 名额被并发抢走时保留的带冲突草稿 */
+  const [slotConflict, setSlotConflict] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
   const [analysisDraft, setAnalysisDraft] = useState({
     method: 'microprobe' as AnalysisMethod,
     fa: 18,
@@ -103,18 +115,59 @@ export default function Detail() {
   const advice = classifyByAnalysis(analysisDraft);
   const hits = evaluateThresholds(analysisDraft);
 
+  const onLoan = sample.storage === 'loan-out';
+  const capacity = capacityInfo(
+    schedules,
+    sectionDraft.preparation,
+    sectionDraft.scheduleDate,
+  );
+
   const submitSection = async () => {
-    const no = sectionDraft.sectionNo.trim() || `TS-${new Date().getFullYear()}-${mySections.length + 1}`.padEnd(3, '0');
-    await addSection({
-      sectionNo: no,
+    setFormError(null);
+    if (!sectionDraft.scheduleDate) {
+      setFormError('请选择制样日期后再送排');
+      return;
+    }
+    const no =
+      sectionDraft.sectionNo.trim() ||
+      `TS-${new Date().getFullYear()}-${String(mySections.length + 1).padStart(3, '0')}`;
+    const result = await submitSectionAction({
       sampleId: sample.id,
+      sectionNo: no,
       thickness: Number(sectionDraft.thickness),
       preparation: sectionDraft.preparation,
+      date: sectionDraft.scheduleDate,
       minerals: sectionDraft.minerals,
       micrographs: sectionDraft.micrograph.trim() ? [sectionDraft.micrograph.trim()] : [],
       quality: sectionDraft.quality,
+      // 打开表单时仍有空闲名额：若事务内被另一页签抢走，则驳回并保留冲突草稿
+      optimisticSlot: capacity.remaining > 0,
     });
-    notify(`已为 ${sample.sampleNo} 新增切片 ${no}`);
+
+    if (result.outcome === 'rejected') {
+      if (result.reason === 'capacity-lost') {
+        setSlotConflict(
+          `${PREPARATION_LABELS[sectionDraft.preparation]} ${sectionDraft.scheduleDate} 的名额已满`,
+        );
+        notify('名额已被另一页签占用，草稿已保留', 'warning');
+      } else {
+        const message =
+          result.reason === 'sample-loan-out'
+            ? '样本外借中，制样排程直接拒绝'
+            : '同一样本当天已排制样，不能重复占用名额';
+        setFormError(message);
+        notify(message, 'warning');
+      }
+      return;
+    }
+
+    setSlotConflict(null);
+    notify(
+      result.outcome === 'scheduled'
+        ? `已为 ${sample.sampleNo} 排定制样：${no}（${sectionDraft.scheduleDate}）`
+        : `当日名额已满，${no} 已进入排队，释放后自动前移`,
+      result.outcome === 'scheduled' ? 'success' : 'info',
+    );
     setSectionDraft((d) => ({ ...d, sectionNo: '', micrograph: '' }));
   };
 
@@ -281,40 +334,105 @@ export default function Detail() {
               切片与制样（{mySections.length}）
             </Typography>
             {mySections.length === 0 ? (
-              <Alert severity="info">暂无切片记录，可在下方就地新增。</Alert>
+              <Alert severity="info">暂无切片记录，可在下方按制样日期送排。</Alert>
             ) : (
               <Stack spacing={1.25}>
-                {mySections.map((s) => (
-                  <Box
-                    key={s.id}
-                    sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2, p: 1.5 }}
-                  >
-                    <Stack direction="row" justifyContent="space-between" flexWrap="wrap" gap={1}>
-                      <Typography variant="subtitle1" fontWeight={700}>
-                        {s.sectionNo}
-                      </Typography>
-                      <Stack direction="row" spacing={0.75}>
-                        <Chip size="small" label={`厚度 ${s.thickness} μm`} />
-                        <Chip size="small" variant="outlined" label={PREPARATION_LABELS[s.preparation]} />
-                        <Chip size="small" color="secondary" label={SECTION_QUALITY_LABELS[s.quality]} />
+                {mySections.map((s) => {
+                  const sch = s.scheduleId
+                    ? mySchedules.find((sc) => sc.id === s.scheduleId)
+                    : undefined;
+                  const prep = sectionPrepStatus(s);
+                  return (
+                    <Box
+                      key={s.id}
+                      sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2, p: 1.5 }}
+                    >
+                      <Stack direction="row" justifyContent="space-between" flexWrap="wrap" gap={1}>
+                        <Typography variant="subtitle1" fontWeight={700}>
+                          {s.sectionNo}
+                        </Typography>
+                        <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                          <Chip size="small" label={`厚度 ${s.thickness} μm`} />
+                          <Chip size="small" variant="outlined" label={PREPARATION_LABELS[s.preparation]} />
+                          <PrepStatusChip status={prep} />
+                          <Chip
+                            size="small"
+                            variant="outlined"
+                            label={s.scheduleDate ? `制样日 ${s.scheduleDate}` : '待排（未选日期）'}
+                          />
+                        </Stack>
                       </Stack>
-                    </Stack>
-                    <Typography variant="body2" color="text.secondary">
-                      矿物占比：{MINERAL_KEYS.map((k) => `${MINERAL_LABELS[k]} ${s.minerals[k]}%`).join(' · ')}
-                      （合计 {mineralTotal(s.minerals)}%）
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      显微照片：{s.micrographs.length ? s.micrographs.join('、') : '未上传'}
-                    </Typography>
-                  </Box>
-                ))}
+                      <Typography variant="body2" color="text.secondary">
+                        矿物占比：{MINERAL_KEYS.map((k) => `${MINERAL_LABELS[k]} ${s.minerals[k]}%`).join(' · ')}
+                        （合计 {mineralTotal(s.minerals)}%）
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        显微照片：{s.micrographs.length ? s.micrographs.join('、') : '未上传'}
+                        {sch && sch.status === 'queued' ? ` · 排队第 ${sch.queuePosition} 位，名额释放后自动前移` : ''}
+                      </Typography>
+                      {sch && (sch.status === 'queued' || sch.status === 'scheduled') ? (
+                        <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
+                          {sch.status === 'scheduled' ? (
+                            <>
+                              <Button
+                                size="small"
+                                color="success"
+                                variant="outlined"
+                                onClick={() => {
+                                  void completeScheduleAction(sch.id);
+                                  notify(`切片 ${s.sectionNo} 已完成制样，可绑定检测记录`);
+                                }}
+                              >
+                                完成制样
+                              </Button>
+                              <Button
+                                size="small"
+                                color="error"
+                                variant="outlined"
+                                onClick={() => {
+                                  void failScheduleAction(sch.id);
+                                  notify('已标记制样失败，名额释放并重排队列', 'warning');
+                                }}
+                              >
+                                标记失败
+                              </Button>
+                            </>
+                          ) : null}
+                          <Button
+                            size="small"
+                            color="inherit"
+                            variant="outlined"
+                            onClick={() => {
+                              void cancelScheduleAction(sch.id);
+                              notify('已取消排程，名额释放，后面任务前移', 'info');
+                            }}
+                          >
+                            {sch.status === 'queued' ? '退出排队' : '取消排程'}
+                          </Button>
+                        </Stack>
+                      ) : null}
+                    </Box>
+                  );
+                })}
               </Stack>
             )}
 
             <Divider sx={{ my: 2 }} />
             <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>
-              就地新增切片
+              送样制样（按「制样方式 × 日期」占名额）
             </Typography>
+            {onLoan ? (
+              <Alert severity="error" sx={{ mb: 1.5 }}>
+                样本当前为「外借中」，制样排程直接拒绝；请在基本信息区切回存放状态后再送排。
+              </Alert>
+            ) : null}
+            {formError ? <Alert severity="error" sx={{ mb: 1.5 }}>{formError}</Alert> : null}
+            {slotConflict ? (
+              <Alert severity="warning" sx={{ mb: 1.5 }}>
+                {slotConflict}：两个页签同时提交，最后一个名额只允许一方成功。当前表单内容已保留为冲突草稿，
+                可改期、改换制样方式后重提，或确认后按排队处理。
+              </Alert>
+            ) : null}
             <Stack spacing={1.5}>
               <Stack direction="row" spacing={1.5} flexWrap="wrap" useFlexGap>
                 <TextField
@@ -340,9 +458,10 @@ export default function Detail() {
                     labelId="prep-label"
                     label="制样方式"
                     value={sectionDraft.preparation}
-                    onChange={(e) =>
-                      setSectionDraft((d) => ({ ...d, preparation: e.target.value as PreparationMethod }))
-                    }
+                    onChange={(e) => {
+                      setSlotConflict(null);
+                      setSectionDraft((d) => ({ ...d, preparation: e.target.value as PreparationMethod }));
+                    }}
                   >
                     {PREPARATIONS.map((p) => (
                       <MenuItem key={p} value={p}>
@@ -351,6 +470,19 @@ export default function Detail() {
                     ))}
                   </Select>
                 </FormControl>
+                <TextField
+                  id="section-schedule-date"
+                  size="small"
+                  type="date"
+                  label="制样日期"
+                  InputLabelProps={{ shrink: true }}
+                  value={sectionDraft.scheduleDate}
+                  onChange={(e) => {
+                    setSlotConflict(null);
+                    setSectionDraft((d) => ({ ...d, scheduleDate: e.target.value }));
+                  }}
+                  sx={{ width: 170 }}
+                />
                 <FormControl size="small" sx={{ minWidth: 170 }}>
                   <InputLabel id="quality-label">质量标注</InputLabel>
                   <Select
@@ -378,6 +510,17 @@ export default function Detail() {
                 />
               </Stack>
 
+              <Chip
+                size="small"
+                color={capacity.remaining > 0 ? 'success' : 'warning'}
+                variant="outlined"
+                sx={{ alignSelf: 'flex-start' }}
+                label={`${PREPARATION_LABELS[sectionDraft.preparation]} · ${sectionDraft.scheduleDate} 名额 ${capacity.used}/${capacity.total}，` +
+                  (capacity.remaining > 0
+                    ? `剩余 ${capacity.remaining} 个`
+                    : `已满，前面排队 ${capacity.queued} 位，新送样顺延`)}
+              />
+
               <Stack direction="row" spacing={1.5} flexWrap="wrap" useFlexGap>
                 {MINERAL_KEYS.map((k) => (
                   <FieldGroup
@@ -401,11 +544,12 @@ export default function Detail() {
               <Button
                 variant="contained"
                 startIcon={<AddIcon />}
-                onClick={submitSection}
+                onClick={() => void submitSection()}
                 id="add-section"
+                disabled={onLoan}
                 sx={{ alignSelf: 'flex-start' }}
               >
-                新增切片
+                {capacity.remaining > 0 ? '送样并排定' : '送样（排入队列）'}
               </Button>
             </Stack>
           </Paper>

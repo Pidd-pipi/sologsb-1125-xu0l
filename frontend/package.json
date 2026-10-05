@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview --port 21825"
+    "preview": "vite preview --port 21825",
+    "test:scheduler": "node --import tsx scripts/scheduler.test.ts"
   },
   "dependencies": {
     "@emotion/react": "^11.13.5",
