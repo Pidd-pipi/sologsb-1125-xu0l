@@ -31,11 +31,13 @@ import {
   type SectionQuality,
 } from '../types/section';
 import { formatDate } from '../utils/format';
+import { SCHEDULE_STATUS_LABELS } from '../types/schedule';
 
 /** `/sections` 切片库 */
 export default function Sections() {
   const sections = useSampleStore((s) => s.sections);
   const samples = useSampleStore((s) => s.samples);
+  const schedules = useSampleStore((s) => s.schedules);
   const updateSection = useSampleStore((s) => s.updateSection);
   const notify = useToastStore((s) => s.notify);
   const { results } = useSampleFilter();
@@ -47,6 +49,10 @@ export default function Sections() {
   const [selected, setSelected] = useState<string[]>([]);
 
   const sampleMap = useMemo(() => new Map(samples.map((s) => [s.id, s])), [samples]);
+  const scheduleMap = useMemo(
+    () => new Map(schedules.map((s) => [s.sectionId, s]).filter(([id]) => !!id) as [string, typeof schedules[number]][]),
+    [schedules],
+  );
   const visibleSampleIds = useMemo(() => new Set(results.map((s) => s.id)), [results]);
 
   const filtered = useMemo(
@@ -168,6 +174,18 @@ export default function Sections() {
                         {s.sectionNo}
                       </Typography>
                       <Chip size="small" color="secondary" label={SECTION_QUALITY_LABELS[s.quality]} />
+                      {(() => {
+                        const sch = scheduleMap.get(s.id);
+                        return sch ? (
+                          <Chip
+                            size="small"
+                            color={sch.status === 'completed' ? 'success' : 'primary'}
+                            label={`制样：${SCHEDULE_STATUS_LABELS[sch.status]}`}
+                          />
+                        ) : (
+                          <Chip size="small" color="warning" label="待排" />
+                        );
+                      })()}
                     </Stack>
 
                     {sample ? (

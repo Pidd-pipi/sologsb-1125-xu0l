@@ -22,25 +22,24 @@ import SampleCard from '../components/common/SampleCard';
 import FieldGroup from '../components/common/FieldGroup';
 import ClassificationBadge from '../components/common/Badge';
 import EmptyState from '../components/common/EmptyState';
+import ScheduleManager from '../components/schedule/ScheduleManager';
 import { useSampleStore } from '../stores/sampleStore';
 import { useToastStore } from '../stores/uiStore';
 import {
   ANALYSIS_METHODS,
   ANALYSIS_METHOD_LABELS,
+  ANALYSIS_TARGETS,
+  ANALYSIS_TARGET_LABELS,
   ANALYSIS_THRESHOLDS,
   type AnalysisMethod,
+  type AnalysisTarget,
 } from '../types/analysis';
 import {
   MINERAL_KEYS,
   MINERAL_LABELS,
-  PREPARATIONS,
   PREPARATION_LABELS,
-  SECTION_QUALITIES,
   SECTION_QUALITY_LABELS,
   mineralTotal,
-  type MineralRatios,
-  type PreparationMethod,
-  type SectionQuality,
 } from '../types/section';
 import {
   FALL_OR_FIND_LABELS,
@@ -48,6 +47,7 @@ import {
   WEATHERING_LABELS,
 } from '../types/sample';
 import { FIND_ENVIRONMENT_LABELS, COORDINATE_SOURCE_LABELS } from '../types/find';
+import { SCHEDULE_STATUS_LABELS, isSectionPrepComplete } from '../types/schedule';
 import { classifyByAnalysis, evaluateThresholds } from '../utils/classify';
 import { formatDate, formatNumber, formatWeight } from '../utils/format';
 import { formatCoordinate } from '../utils/geo';
@@ -59,7 +59,7 @@ export default function Detail() {
   const finds = useSampleStore((s) => s.finds);
   const sections = useSampleStore((s) => s.sections);
   const analysis = useSampleStore((s) => s.analysis);
-  const addSection = useSampleStore((s) => s.addSection);
+  const schedules = useSampleStore((s) => s.schedules);
   const addAnalysis = useSampleStore((s) => s.addAnalysis);
   const updateSample = useSampleStore((s) => s.updateSample);
   const notify = useToastStore((s) => s.notify);
@@ -69,15 +69,14 @@ export default function Detail() {
   const mySections = useMemo(() => sections.filter((s) => s.sampleId === id), [sections, id]);
   const myAnalysis = useMemo(() => analysis.filter((a) => a.sampleId === id), [analysis, id]);
 
-  const [sectionDraft, setSectionDraft] = useState({
-    sectionNo: '',
-    thickness: 30,
-    preparation: 'resin' as PreparationMethod,
-    quality: 'unrated' as SectionQuality,
-    micrograph: '',
-    minerals: { olivine: 40, pyroxene: 25, feldspar: 15, metal: 20 } as MineralRatios,
-  });
+  const completedSections = useMemo(
+    () => mySections.filter((s) => isSectionPrepComplete(schedules, s.id)),
+    [mySections, schedules],
+  );
+
   const [analysisDraft, setAnalysisDraft] = useState({
+    target: 'sample' as AnalysisTarget,
+    sectionId: '',
     method: 'microprobe' as AnalysisMethod,
     fa: 18,
     fs: 16,
@@ -85,6 +84,7 @@ export default function Detail() {
     kamaciteBandwidth: 0.05,
     testedAt: new Date().toISOString().slice(0, 10),
   });
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
 
   if (!sample) {
     return (
@@ -99,37 +99,27 @@ export default function Detail() {
     );
   }
 
-  const mineralSum = mineralTotal(sectionDraft.minerals);
   const advice = classifyByAnalysis(analysisDraft);
   const hits = evaluateThresholds(analysisDraft);
 
-  const submitSection = async () => {
-    const no = sectionDraft.sectionNo.trim() || `TS-${new Date().getFullYear()}-${mySections.length + 1}`.padEnd(3, '0');
-    await addSection({
-      sectionNo: no,
-      sampleId: sample.id,
-      thickness: Number(sectionDraft.thickness),
-      preparation: sectionDraft.preparation,
-      minerals: sectionDraft.minerals,
-      micrographs: sectionDraft.micrograph.trim() ? [sectionDraft.micrograph.trim()] : [],
-      quality: sectionDraft.quality,
-    });
-    notify(`已为 ${sample.sampleNo} 新增切片 ${no}`);
-    setSectionDraft((d) => ({ ...d, sectionNo: '', micrograph: '' }));
-  };
-
   const submitAnalysis = async () => {
-    await addAnalysis({
-      sampleId: sample.id,
-      target: 'sample',
-      method: analysisDraft.method,
-      fa: Number(analysisDraft.fa),
-      fs: Number(analysisDraft.fs),
-      ni: Number(analysisDraft.ni),
-      kamaciteBandwidth: Number(analysisDraft.kamaciteBandwidth),
-      testedAt: analysisDraft.testedAt,
-    });
-    notify(`已为 ${sample.sampleNo} 写入一条检测记录`);
+    setAnalysisError(null);
+    try {
+      await addAnalysis({
+        sampleId: sample.id,
+        sectionId: analysisDraft.target === 'section' ? analysisDraft.sectionId : undefined,
+        target: analysisDraft.target,
+        method: analysisDraft.method,
+        fa: Number(analysisDraft.fa),
+        fs: Number(analysisDraft.fs),
+        ni: Number(analysisDraft.ni),
+        kamaciteBandwidth: Number(analysisDraft.kamaciteBandwidth),
+        testedAt: analysisDraft.testedAt,
+      });
+      notify(`已为 ${sample.sampleNo} 写入一条检测记录`);
+    } catch (e) {
+      setAnalysisError(e instanceof Error ? e.message : '检测记录写入失败');
+    }
   };
 
   return (
@@ -274,140 +264,58 @@ export default function Detail() {
         </Grid>
       </Grid>
 
+      <Paper variant="outlined" sx={{ p: 2.5 }}>
+        <ScheduleManager sampleId={sample.id} />
+      </Paper>
+
       <Grid container spacing={2.5}>
         <Grid item xs={12} md={7}>
           <Paper variant="outlined" sx={{ p: 2.5 }}>
             <Typography variant="h6" sx={{ mb: 1.5 }}>
-              切片与制样（{mySections.length}）
+              切片列表（{mySections.length}）
             </Typography>
             {mySections.length === 0 ? (
-              <Alert severity="info">暂无切片记录，可在下方就地新增。</Alert>
+              <Alert severity="info">暂无切片，可通过上方「制样排程」完成制样后自动登记。</Alert>
             ) : (
               <Stack spacing={1.25}>
-                {mySections.map((s) => (
-                  <Box
-                    key={s.id}
-                    sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2, p: 1.5 }}
-                  >
-                    <Stack direction="row" justifyContent="space-between" flexWrap="wrap" gap={1}>
-                      <Typography variant="subtitle1" fontWeight={700}>
-                        {s.sectionNo}
-                      </Typography>
-                      <Stack direction="row" spacing={0.75}>
-                        <Chip size="small" label={`厚度 ${s.thickness} μm`} />
-                        <Chip size="small" variant="outlined" label={PREPARATION_LABELS[s.preparation]} />
-                        <Chip size="small" color="secondary" label={SECTION_QUALITY_LABELS[s.quality]} />
+                {mySections.map((s) => {
+                  const sch = schedules.find((x) => x.sectionId === s.id);
+                  return (
+                    <Box
+                      key={s.id}
+                      sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2, p: 1.5 }}
+                    >
+                      <Stack direction="row" justifyContent="space-between" flexWrap="wrap" gap={1}>
+                        <Typography variant="subtitle1" fontWeight={700}>
+                          {s.sectionNo}
+                        </Typography>
+                        <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                          <Chip size="small" label={`厚度 ${s.thickness} μm`} />
+                          <Chip size="small" variant="outlined" label={PREPARATION_LABELS[s.preparation]} />
+                          <Chip size="small" color="secondary" label={SECTION_QUALITY_LABELS[s.quality]} />
+                          {sch ? (
+                            <Chip
+                              size="small"
+                              color={sch.status === 'completed' ? 'success' : 'primary'}
+                              label={`制样：${SCHEDULE_STATUS_LABELS[sch.status]}`}
+                            />
+                          ) : (
+                            <Chip size="small" color="warning" label="待排" />
+                          )}
+                        </Stack>
                       </Stack>
-                    </Stack>
-                    <Typography variant="body2" color="text.secondary">
-                      矿物占比：{MINERAL_KEYS.map((k) => `${MINERAL_LABELS[k]} ${s.minerals[k]}%`).join(' · ')}
-                      （合计 {mineralTotal(s.minerals)}%）
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      显微照片：{s.micrographs.length ? s.micrographs.join('、') : '未上传'}
-                    </Typography>
-                  </Box>
-                ))}
+                      <Typography variant="body2" color="text.secondary">
+                        矿物占比：{MINERAL_KEYS.map((k) => `${MINERAL_LABELS[k]} ${s.minerals[k]}%`).join(' · ')}
+                        （合计 {mineralTotal(s.minerals)}%）
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        显微照片：{s.micrographs.length ? s.micrographs.join('、') : '未上传'}
+                      </Typography>
+                    </Box>
+                  );
+                })}
               </Stack>
             )}
-
-            <Divider sx={{ my: 2 }} />
-            <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>
-              就地新增切片
-            </Typography>
-            <Stack spacing={1.5}>
-              <Stack direction="row" spacing={1.5} flexWrap="wrap" useFlexGap>
-                <TextField
-                  id="section-no"
-                  size="small"
-                  label="切片编号"
-                  value={sectionDraft.sectionNo}
-                  onChange={(e) => setSectionDraft((d) => ({ ...d, sectionNo: e.target.value }))}
-                  sx={{ width: 180 }}
-                />
-                <TextField
-                  id="section-thickness"
-                  size="small"
-                  type="number"
-                  label="厚度 μm"
-                  value={sectionDraft.thickness}
-                  onChange={(e) => setSectionDraft((d) => ({ ...d, thickness: Number(e.target.value) }))}
-                  sx={{ width: 140 }}
-                />
-                <FormControl size="small" sx={{ minWidth: 150 }}>
-                  <InputLabel id="prep-label">制样方式</InputLabel>
-                  <Select
-                    labelId="prep-label"
-                    label="制样方式"
-                    value={sectionDraft.preparation}
-                    onChange={(e) =>
-                      setSectionDraft((d) => ({ ...d, preparation: e.target.value as PreparationMethod }))
-                    }
-                  >
-                    {PREPARATIONS.map((p) => (
-                      <MenuItem key={p} value={p}>
-                        {PREPARATION_LABELS[p]}
-                      </MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-                <FormControl size="small" sx={{ minWidth: 170 }}>
-                  <InputLabel id="quality-label">质量标注</InputLabel>
-                  <Select
-                    labelId="quality-label"
-                    label="质量标注"
-                    value={sectionDraft.quality}
-                    onChange={(e) =>
-                      setSectionDraft((d) => ({ ...d, quality: e.target.value as SectionQuality }))
-                    }
-                  >
-                    {SECTION_QUALITIES.map((q) => (
-                      <MenuItem key={q} value={q}>
-                        {SECTION_QUALITY_LABELS[q]}
-                      </MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-                <TextField
-                  id="section-micrograph"
-                  size="small"
-                  label="显微照片文件名"
-                  value={sectionDraft.micrograph}
-                  onChange={(e) => setSectionDraft((d) => ({ ...d, micrograph: e.target.value }))}
-                  sx={{ width: 220 }}
-                />
-              </Stack>
-
-              <Stack direction="row" spacing={1.5} flexWrap="wrap" useFlexGap>
-                {MINERAL_KEYS.map((k) => (
-                  <FieldGroup
-                    key={k}
-                    title={`${MINERAL_LABELS[k]}占比`}
-                    unit="%"
-                    min={0}
-                    max={100}
-                    value={sectionDraft.minerals[k]}
-                    onChange={(v) =>
-                      setSectionDraft((d) => ({ ...d, minerals: { ...d.minerals, [k]: v } }))
-                    }
-                    inputId={`mineral-${k}`}
-                    label={MINERAL_LABELS[k]}
-                  />
-                ))}
-              </Stack>
-              <Typography variant="caption" color={mineralSum === 100 ? 'success.main' : 'warning.main'}>
-                矿物占比合计 {mineralSum}%（建议合计 100%）
-              </Typography>
-              <Button
-                variant="contained"
-                startIcon={<AddIcon />}
-                onClick={submitSection}
-                id="add-section"
-                sx={{ alignSelf: 'flex-start' }}
-              >
-                新增切片
-              </Button>
-            </Stack>
           </Paper>
         </Grid>
 
@@ -422,6 +330,9 @@ export default function Detail() {
               <Stack spacing={1.25} sx={{ mb: 2 }}>
                 {myAnalysis.map((a) => {
                   const a2 = classifyByAnalysis(a);
+                  const targetSection = a.sectionId
+                    ? mySections.find((s) => s.id === a.sectionId)
+                    : undefined;
                   return (
                     <Box
                       key={a.id}
@@ -431,7 +342,18 @@ export default function Detail() {
                         <Typography variant="subtitle2">
                           {ANALYSIS_METHOD_LABELS[a.method]} · {a.testedAt}
                         </Typography>
-                        <ClassificationBadge category={a2.category} showGroup={false} />
+                        <Stack direction="row" spacing={0.5}>
+                          <Chip
+                            size="small"
+                            variant="outlined"
+                            label={
+                              targetSection
+                                ? `${ANALYSIS_TARGET_LABELS[a.target]}：${targetSection.sectionNo}`
+                                : ANALYSIS_TARGET_LABELS[a.target]
+                            }
+                          />
+                          <ClassificationBadge category={a2.category} showGroup={false} />
+                        </Stack>
                       </Stack>
                       <Typography variant="body2" color="text.secondary">
                         Fa {formatNumber(a.fa, 2, ' mol%')} · Fs {formatNumber(a.fs, 2, ' mol%')} · Ni{' '}
@@ -451,7 +373,47 @@ export default function Detail() {
               就地录入检测数值
             </Typography>
             <Stack spacing={1.5}>
+              {analysisError ? <Alert severity="error">{analysisError}</Alert> : null}
               <Stack direction="row" spacing={1.5} flexWrap="wrap" useFlexGap>
+                <FormControl size="small" sx={{ minWidth: 130 }}>
+                  <InputLabel id="detail-target-label">检测对象</InputLabel>
+                  <Select
+                    labelId="detail-target-label"
+                    label="检测对象"
+                    value={analysisDraft.target}
+                    onChange={(e) =>
+                      setAnalysisDraft((d) => ({ ...d, target: e.target.value as AnalysisTarget, sectionId: '' }))
+                    }
+                  >
+                    {ANALYSIS_TARGETS.map((t) => (
+                      <MenuItem key={t} value={t}>
+                        {ANALYSIS_TARGET_LABELS[t]}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+                {analysisDraft.target === 'section' ? (
+                  <FormControl size="small" sx={{ minWidth: 180 }}>
+                    <InputLabel id="detail-section-label">关联切片</InputLabel>
+                    <Select
+                      labelId="detail-section-label"
+                      label="关联切片"
+                      value={analysisDraft.sectionId}
+                      onChange={(e) => setAnalysisDraft((d) => ({ ...d, sectionId: e.target.value }))}
+                    >
+                      {completedSections.length === 0 ? (
+                        <MenuItem value="" disabled>
+                          暂无已完成制样的切片
+                        </MenuItem>
+                      ) : null}
+                      {completedSections.map((s) => (
+                        <MenuItem key={s.id} value={s.id}>
+                          {s.sectionNo}（{s.thickness} μm）
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                ) : null}
                 <FormControl size="small" sx={{ minWidth: 150 }}>
                   <InputLabel id="method-label">检测方法</InputLabel>
                   <Select
@@ -480,6 +442,11 @@ export default function Detail() {
                   sx={{ width: 180 }}
                 />
               </Stack>
+              {analysisDraft.target === 'section' && completedSections.length === 0 ? (
+                <Alert severity="warning">
+                  该样本暂无已完成制样的切片，检测记录暂不能绑定切片；请先通过「制样排程」完成制样。
+                </Alert>
+              ) : null}
               <Stack direction="row" spacing={1.5} flexWrap="wrap" useFlexGap>
                 <FieldGroup
                   title="橄榄石 Fa"

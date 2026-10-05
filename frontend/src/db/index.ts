@@ -3,6 +3,7 @@ import type { MeteoriteSample } from '../types/sample';
 import type { FindRecord } from '../types/find';
 import type { ThinSection } from '../types/section';
 import type { AnalysisRecord } from '../types/analysis';
+import type { PreparationSchedule } from '../types/schedule';
 
 /** 库名固定为 gbmeteorite-db */
 export const DB_NAME = 'gbmeteorite-db';
@@ -12,12 +13,14 @@ export const DB_NAME = 'gbmeteorite-db';
  *  - v1：建 samples / finds / sections 三张表
  *  - v2：新增 analysis 表，并为 analysis 加 sampleId 索引
  *  - v3：为 samples 补 updatedAt 字段，并按 id 回填旧记录
+ *  - v4：新增 schedules 制样排程表；sections 加 scheduleId 索引（旧切片无排程 → 待排）
  */
 export class MeteoriteDB extends Dexie {
   samples!: Table<MeteoriteSample, string>;
   finds!: Table<FindRecord, string>;
   sections!: Table<ThinSection, string>;
   analysis!: Table<AnalysisRecord, string>;
+  schedules!: Table<PreparationSchedule, string>;
 
   constructor() {
     super(DB_NAME);
@@ -63,6 +66,27 @@ export class MeteoriteDB extends Dexie {
               sample.updatedAt =
                 typeof sample.createdAt === 'number' ? sample.createdAt : Date.now();
             }
+          });
+      });
+
+    this.version(4)
+      .stores({
+        samples:
+          'id, sampleNo, category, chemicalGroup, totalWeight, createdAt, updatedAt',
+        finds: 'id, sampleId, region, createdAt',
+        sections: 'id, sectionNo, sampleId, thickness, createdAt, scheduleId',
+        analysis: 'id, sampleId, sectionId, method, testedAt, createdAt',
+        schedules:
+          'id, sampleId, method, scheduledDate, status, createdAt, [method+scheduledDate]',
+      })
+      .upgrade(async (tx) => {
+        // v4：旧切片没有排程，保持 scheduleId 为空 → 界面标「待排」
+        // 无需回填，读取时按是否有 scheduleId 判断即可
+        await tx
+          .table<ThinSection, string>('sections')
+          .toCollection()
+          .modify((section) => {
+            if (typeof section.scheduleId !== 'string') section.scheduleId = undefined;
           });
       });
   }
@@ -160,6 +184,7 @@ export async function seedIfEmpty(): Promise<void> {
         micrographs: ['met001_ppl.jpg', 'met001_xpl.jpg'],
         quality: 'good',
         createdAt: now - 86400000 * 35,
+        scheduleId: 'schedule_seed_1',
       },
       {
         id: 'section_seed_2',
@@ -171,6 +196,51 @@ export async function seedIfEmpty(): Promise<void> {
         micrographs: ['met002_reflect.jpg'],
         quality: 'fair',
         createdAt: now - 86400000 * 25,
+        // 无排程 → 标记「待排」
+      },
+    ]);
+    await db.schedules.bulkAdd([
+      {
+        id: 'schedule_seed_1',
+        sampleId: 'sample_seed_1',
+        method: 'resin',
+        scheduledDate: '2024-05-20',
+        status: 'completed',
+        sectionId: 'section_seed_1',
+        createdAt: now - 86400000 * 36,
+        updatedAt: now - 86400000 * 35,
+        version: 1,
+      },
+      {
+        id: 'schedule_seed_2',
+        sampleId: 'sample_seed_2',
+        method: 'resin',
+        scheduledDate: new Date().toISOString().slice(0, 10),
+        status: 'scheduled',
+        createdAt: now - 86400000 * 2,
+        updatedAt: now - 86400000 * 2,
+        version: 1,
+      },
+      {
+        id: 'schedule_seed_3',
+        sampleId: 'sample_seed_3',
+        method: 'resin',
+        scheduledDate: new Date().toISOString().slice(0, 10),
+        status: 'scheduled',
+        createdAt: now - 86400000,
+        updatedAt: now - 86400000,
+        version: 1,
+      },
+      {
+        id: 'schedule_seed_4',
+        sampleId: 'sample_seed_1',
+        method: 'resin',
+        scheduledDate: new Date().toISOString().slice(0, 10),
+        status: 'queued',
+        reason: '',
+        createdAt: now - 86400000 / 2,
+        updatedAt: now - 86400000 / 2,
+        version: 1,
       },
     ]);
     await db.analysis.bulkAdd([
@@ -197,6 +267,19 @@ export async function seedIfEmpty(): Promise<void> {
         kamaciteBandwidth: 0.62,
         testedAt: '2024-07-03',
         createdAt: now - 86400000 * 12,
+      },
+      {
+        id: 'analysis_seed_3',
+        sampleId: 'sample_seed_1',
+        sectionId: 'section_seed_1',
+        target: 'section',
+        method: 'microprobe',
+        fa: 18.2,
+        fs: 15.9,
+        ni: 0.9,
+        kamaciteBandwidth: 0.02,
+        testedAt: '2024-06-18',
+        createdAt: now - 86400000 * 10,
       },
     ]);
   });

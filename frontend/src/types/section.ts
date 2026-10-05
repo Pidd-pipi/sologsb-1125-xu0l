@@ -31,6 +31,8 @@ export interface ThinSection {
   micrographs: string[];
   quality: SectionQuality;
   createdAt: number;
+  /** 关联的制样排程 id（v4 新增）；无排程的旧切片标记为「待排」 */
+  scheduleId?: string;
 }
 
 export const PREPARATION_LABELS: Record<PreparationMethod, string> = {

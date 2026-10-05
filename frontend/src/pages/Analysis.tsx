@@ -35,6 +35,7 @@ import {
 } from '../types/analysis';
 import { classifyByAnalysis, evaluateThresholds } from '../utils/classify';
 import { formatDate } from '../utils/format';
+import { isSectionPrepComplete } from '../types/schedule';
 
 interface AnalysisDraft {
   sampleId: string;
@@ -53,6 +54,7 @@ export default function Analysis() {
   const samples = useSampleStore((s) => s.samples);
   const sections = useSampleStore((s) => s.sections);
   const analysis = useSampleStore((s) => s.analysis);
+  const schedules = useSampleStore((s) => s.schedules);
   const addAnalysis = useSampleStore((s) => s.addAnalysis);
   const notify = useToastStore((s) => s.notify);
 
@@ -74,9 +76,13 @@ export default function Analysis() {
   const { value, patch, reset, clear, restored } = useLocalDraft<AnalysisDraft>('analysis-entry', initial);
   const [error, setError] = useState<string | null>(null);
 
+  // 仅已完成制样的切片可绑定检测记录
   const sampleSections = useMemo(
-    () => sections.filter((s) => s.sampleId === value.sampleId),
-    [sections, value.sampleId],
+    () =>
+      sections.filter(
+        (s) => s.sampleId === value.sampleId && isSectionPrepComplete(schedules, s.id),
+      ),
+    [sections, schedules, value.sampleId],
   );
 
   const hits = evaluateThresholds(value);
@@ -89,21 +95,26 @@ export default function Analysis() {
       return;
     }
     if (value.target === 'section' && !value.sectionId) {
-      setError('检测对象为切片时必须选择一张切片');
+      setError('检测对象为切片时必须选择一张已完成制样的切片');
       return;
     }
     setError(null);
-    await addAnalysis({
-      sampleId: value.sampleId,
-      sectionId: value.target === 'section' ? value.sectionId : undefined,
-      target: value.target,
-      method: value.method,
-      fa: Number(value.fa),
-      fs: Number(value.fs),
-      ni: Number(value.ni),
-      kamaciteBandwidth: Number(value.kamaciteBandwidth),
-      testedAt: value.testedAt,
-    });
+    try {
+      await addAnalysis({
+        sampleId: value.sampleId,
+        sectionId: value.target === 'section' ? value.sectionId : undefined,
+        target: value.target,
+        method: value.method,
+        fa: Number(value.fa),
+        fs: Number(value.fs),
+        ni: Number(value.ni),
+        kamaciteBandwidth: Number(value.kamaciteBandwidth),
+        testedAt: value.testedAt,
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '检测记录写入失败');
+      return;
+    }
     clear();
     notify('检测记录已写入本地库');
     patch({ fa: 18.5, fs: 16, ni: 0.8, kamaciteBandwidth: 0.05 });
@@ -169,7 +180,7 @@ export default function Analysis() {
                     >
                       {sampleSections.length === 0 ? (
                         <MenuItem value="" disabled>
-                          该样本暂无切片
+                          暂无已完成制样的切片
                         </MenuItem>
                       ) : null}
                       {sampleSections.map((s) => (
@@ -206,6 +217,12 @@ export default function Analysis() {
                   sx={{ width: 180 }}
                 />
               </Stack>
+
+              {value.target === 'section' && sampleSections.length === 0 ? (
+                <Alert severity="warning">
+                  该样本暂无已完成制样的切片，检测记录暂不能绑定切片；请先到样本详情通过「制样排程」完成制样。
+                </Alert>
+              ) : null}
 
               <Stack direction="row" spacing={1.5} flexWrap="wrap" useFlexGap>
                 <FieldGroup
